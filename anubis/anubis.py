@@ -26,6 +26,25 @@ class AnubisDB(object):
             return self.subdomains 
         except Exception as e:
             print("ERROR in [AnubisDB] ", e)
+            return []
+            
+    def search_req(self):
+        """Search request to perform requests search"""
+        try:
+            with requests.Session() as client:
+                resp = client.get(self.url)
+                if resp.status_code == 200:
+                    subs = loads(resp.text)
+                    for sub in subs:
+                        if(sub not in self.domain):
+                            self.subdomains.append(sub)
+                else:
+                    print("HTTP STATUS in [AnubisDB] Wrong Http status return", resp.status_code)
+                    
+            return self.subdomains 
+        except Exception as e:
+            print("ERROR in [AnubisDB] ", e)
+            return []
 
 class AnubisCRT(AnubisDB):
     """Responsible for finding subdomains from crt"""
@@ -64,6 +83,27 @@ class AnubisCRT(AnubisDB):
             
         except Exception as e:
             print("ERROR in [AnubisCRT] ", e)
+            return []
+            
+    def search_req(self):
+        """Perform a search"""
+        try:
+            with requests.Session() as client:
+                resp =  client.get('https://crt.sh/', headers=self.headers, params=self.params)
+                scraped = resp.text
+                subdomain_finder = re.compile('<TD>(.*\.' + self.domain + ')</TD>')
+                links = subdomain_finder.findall(scraped)
+                parsed_links = self._clean_links(links)
+
+                for domain in parsed_links:                    
+                    if domain.strip() not in self.domain and self.domain.endswith(self.domain):
+                        self.subdomains.append(domain.strip())
+                    
+            return list(set(self.subdomains))
+            
+        except Exception as e:
+            print("ERROR in [AnubisCRT] ", e)
+            return []
     
     def _clean_links(self, links):
         deduped = set()
@@ -124,6 +164,41 @@ class AnubisDNSDumpster(AnubisCRT):
             
         except Exception as e:
             print("ERROR in [AnubisDNSDumpster] ", e)
+            return []
+            
+    def search_req(self):
+        """Perform a search"""
+        try:
+            with requests.Session() as client:
+                csrf_resp = client.get(self.url, headers=self.headers)
+                
+                try:
+                    self.csrf_token = csrf_resp.headers['Set-Cookie']
+                    self.csrf_token = self.csrf_token[10:]
+                    self.csrf_token = self.csrf_token.split(";")[0]
+                except Exception as e:
+                    print("ERROR in [AnubisDNSDumpster] Retrieving CSRF Token for DNSDumpster failed", e)
+            
+            with requests.Session() as client:
+                cookies = {'csrftoken': self.csrf_token, }
+                data = {'csrfmiddlewaretoken':self.csrf_token, 'targetip':self.domain,'user':'free'}
+                resp = client.post(self.url, headers=self.headers,cookies=cookies, data=data)
+                
+                try:
+                    scraped = resp.text
+                    subdomain_finder = re.compile('\">(.*\.' + self.domain + ')<br>')
+                    links = subdomain_finder.findall(scraped)
+                    for domain in links:
+                        if domain.strip() not in self.domain and domain.endswith(self.domain):
+                            self.subdomains.append(domain.strip())
+                            
+                except Exception as e:
+                    print("ERROR in [AnubisDNSDumpster] after post", e)
+            return list(set(self.subdomains))
+            
+        except Exception as e:
+            print("ERROR in [AnubisDNSDumpster] ", e)
+            return []
 
 class AnubisHackerTarget(AnubisDNSDumpster):
     def __init__(self, domain):
@@ -148,6 +223,24 @@ class AnubisHackerTarget(AnubisDNSDumpster):
             
         except Exception as e:
             print("ERROR in [AnubisHackerTarget] ", e)
+            return []
+            
+    def search_req(self):
+        try:
+            with requests.Session() as client:
+                resp = client.get(self.url,headers=self.headers)
+                if(resp.status_code == 200):
+                    response = resp.text
+                    hostnames = [result.split(",")[0] for result in response.split("\n")]
+
+                    for hostname in hostnames:
+                        if (hostname) and (self.domain in hostname):
+                            self.subdomains.append(hostname)
+            return list(set(self.subdomains))
+            
+        except Exception as e:
+            print("ERROR in [AnubisHackerTarget] ", e)
+            return []
 
 class Anubis(object):
     """Call other methods to perform search"""
@@ -171,6 +264,28 @@ class Anubis(object):
         
         print("[AnubisHackerTarget] Searching AnubisHackerTarget")
         subdomains += await anubis_ht.search()
+        
+        # Remove duplicate
+        subdomains = list(set(subdomains))
+        return subdomains
+        
+    def search_req(self):
+        anubisdb = AnubisDB(self.domain)
+        anubis_crt = AnubisCRT(self.domain)
+        anubis_dns = AnubisDNSDumpster(self.domain)
+        anubis_ht = AnubisHackerTarget(self.domain)
+        
+        print("[AnubisDB] Searching AnubisDB")
+        subdomains = anubisdb.search_req()
+        
+        print("[AnubisCRT] Searching AnubisCRT")
+        subdomains += anubis_crt.search_req()
+        
+        print("[AnubisDNSDumpster] Searching AnubisDNSDumpster")
+        subdomains += anubis_dns.search_req()
+        
+        print("[AnubisHackerTarget] Searching AnubisHackerTarget")
+        subdomains += anubis_ht.search_req()
         
         # Remove duplicate
         subdomains = list(set(subdomains))
